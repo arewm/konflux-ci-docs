@@ -1,148 +1,85 @@
 = Getting started with {ProductName}
+:description: Understand key concepts and terminology used within {ProductName} before proceeding with common workflows.
 
-Adopting new platforms is always challenging. While we aim to make use of industry standard terminology and
-processes, sometimes we will need to introduce additional concepts. More definitions can be found in the
-xref:glossary:index.adoc[glossary].
+{ProductName} utilizes standard industry terminology where possible but also introduces specific concepts critical to its operation. This page defines key terms necessary for understanding {ProductName}. Refer to the xref:glossary:index.adoc[glossary] for a comprehensive list.
 
 == Key concepts
 
 === Namespace
-A namespace in a Kubernetes cluster can have sole or shared ownership. As a user, it is the most global
-resource that is generally available to you. Most of the Kubernetes Custom Resources (CRs) which you interact
-with are scoped to a single namespace including Components, Applications, Snapshots, and Secrets.
+A namespace in Kubernetes provides workload isolation. You typically interact with resources scoped within a namespace. Most {ProductName} Custom Resources (CRs), including Components, Applications, Snapshots, and Secrets, operate within a single namespace.
 
-All builds are performed by Tekton PipelineRuns within a namespace and usually driven by PipelineDefinitions
-committed to git repositories and triggered via https://pipelinesascode.com/[Pipelines as Code].
+{ProductName} uses Tekton PipelineRuns within a namespace to perform all builds. https://pipelinesascode.com/[Pipelines as Code] typically triggers these builds based on PipelineDefinitions committed to Git repositories.
 
 ==== Tenant namespace
-These are namespaces where artifacts are produced from Tekton Pipelines. These can be accessed by more than one
-individual according to users' roles and the permissions defined by 
-link:https://konflux-ci.dev/architecture/ADR/0011-roles-and-permissions.html[those roles]. The tenant namespaces can be either
-for an individual or a team.
-//TODO: Document the process for getting access to/creating new namespaces
+Tenant namespaces are Kubernetes namespaces where Tekton Pipelines produce build artifacts. Access is controlled via link:https://konflux-ci.dev/architecture/ADR/0011-roles-and-permissions.html[role-based access control (RBAC)], allowing multiple users or teams to share a namespace based on assigned roles.
+// TODO: Document the process for requesting or creating namespaces.
 
-You can grant, modify, or remove other users access to any namespace for which you have the `admin` role. Each
-namespace's admins have the responsibility to ensure that appropriate access is granted to users. If users are
-over-privileged, they may have access to any added secrets or to perform other unintended actions.
+Users with the `admin` role in a namespace can grant, modify, or remove access for other users. Namespace admins must ensure users have appropriate permissions.
+
+CAUTION: Granting excessive privileges might expose secrets or allow unintended actions within the namespace.
 
 ==== Managed namespace
-Sometimes users will need to perform actions that require credentials in someone else's control. Since admins
-in a tenant namespace can see all secrets, these actions need to be performed via separate managed namespaces.
-The primary interaction mode between tenant and managed namespaces is to create a Release referencing a specific
-Snapshot which will trigger a specific pipeline in the managed namespace.
+Use managed namespaces for actions requiring credentials not controlled by tenant namespace users (e.g., production releases). Since tenant namespace admins can view secrets within their namespace, sensitive operations often occur in separate managed namespaces. Interaction typically involves creating a Release CR in the tenant namespace referencing a Snapshot. This triggers a specific pipeline within the target managed namespace.
 
 === Component
-A Component CR describes the properties for an OCI artifact including the git repository where the artifact is from,
-its latest built commit, initial build configuration parameters (i.e. Containerfile path), and any relationships to
-other Components. The CR also contains a reference to its single owning Application.
-Component names must be unique in a namespace, even when components are used in different application.
+A Component CR defines properties for an Open Container Initiative (OCI) artifact. It includes the source Git repository, the latest built commit reference, initial build configuration (like Containerfile path), and relationships to other Components. Each Component belongs to a single Application.
+
+IMPORTANT: Component names must be unique within a namespace, even across different Applications.
 
 === Pipelines as Code (PAC)
-https://pipelinesascode.com/[Pipelines as Code] is a project that provides opinionated tooling to define a
-Tekton-based CI/CD pipeline. It enables the use of a Tekton PipelineDefinition within a git repository and for
-that pipeline to be triggered upon new commits/PR to the repository. In Konflux, these pipelines are pushed to
-the git repositories in the `.tekton` directory.
+https://pipelinesascode.com/[Pipelines as Code] (PAC) provides tooling to define and trigger Tekton-based CI/CD pipelines from Git repositories. {ProductName} uses PAC to run pipelines defined in the `.tekton` directory of a component's repository upon new commits or pull requests.
 
 === Build pipeline
-Upon a new push or pull request (merge request in GitLab) event, the pipeline defined in the repository will be
-run. This pipeline describes the process to build and test a specific artifact. The build process includes Tekton
-Tasks like cloning the git repository, prefetching dependencies, building the OCI artifact and source SBOM, and
-generating the source container. The test process includes Tekton Tasks like running Snyk scans, checking for
-CVEs with clair-in-ci, and running an antivirus scan on the artifact.
+When {ProductName} detects a push or pull request event, it runs the Tekton pipeline defined in the component's repository (`.tekton` directory). This build pipeline executes tasks to build and test the component artifact. Build tasks typically include cloning the Git repository, fetching dependencies, building the OCI artifact, and generating SBOMs. Test tasks often involve security scanning (e.g., Snyk, Clair) and antivirus checks.
 
 === Application
-An Application CR owns multiple Components. You can think of it as the closest object in {ProductName} that
-models an ongoing supported product version. If for some reason you decide you need to, you can decompose your
-product version further and model different sub-products each as their own Application.
+An Application CR represents a collection of related Components. Consider it the primary {ProductName} object modeling a specific product version or releasable unit. You can optionally decompose a complex product into multiple Applications.
 
-An Application contains information about all of the Components which they own and the git repositories that
-they are built from. When a new Component's build pipeline is complete, a new Snapshot is created by the
-Integration Service containing the latest git/OCI reference from each of the Component CRs plus the just-produced
-Component artifact. This will be used as the input to an IntegrationTestScenario.
+The Application CR references its owned Components and their source repositories. When a Component build completes, the {ProductName} Integration Service creates a Snapshot CR. This Snapshot captures the latest Git/OCI references for all Components within the Application (including the newly built one) and serves as input for IntegrationTestScenarios.
 
 === Snapshot
-A Snapshot CR is an immutable set of Component references. It can be created from push or pull request events
-and it _may not_ necessarily represent the latest built artifacts for all Components. A Snapshot defines a set
-of Components which are either tested or released together.
+A Snapshot CR represents an immutable set of specific Component versions (Git commit references or OCI image digests). Snapshots result from build events (push or pull request) and capture a collection of components intended for testing or release together. A Snapshot might not always contain the absolute latest build artifact for every Component in the Application.
 
 === IntegrationTestScenario
-An IntegrationTestScenario (ITS) CR is a Tekton Pipeline defining a test which is intended to run against an
-entire Snapshot. The Integration Service runs all ITSs which are configured for the Snapshot's Application. A
-default ITS is automatically created for every new Application to enable all Components to be checked against
-a specified EnterpriseContractPolicy.
+An IntegrationTestScenario (ITS) CR defines a Tekton Pipeline for testing a complete Snapshot. The {ProductName} Integration Service automatically runs all ITSs associated with an Application whenever a new Snapshot for that Application is created. {ProductName} automatically creates a default ITS for each new Application to validate components against a specified EnterpriseContractPolicy.
 
-Each ITS can be configured as optional for release. All non-optional tests must pass before the new Component
-build is "promoted" to update the references on the Component CR.
+You can configure each ITS as optional or mandatory for release promotion. All mandatory ITSs must pass successfully before {ProductName} updates the Component CRs with the new build references.
 
 === EnterpriseContractPolicy
-Building in {ProductName} follows a "build once, release multiple times" mentality where each release can have
-separate requirements on the builds before allowing the action. These build requirements are codified in an
-EnterpriseContractPolicy (ECP) which _may_ also be a CR. 
+{ProductName} promotes a "build once, release multiple times" approach. An EnterpriseContractPolicy (ECP) defines the specific requirements a Snapshot must meet for a particular release action. An ECP enforces these build requirements and can be defined as a Kubernetes CR.
 
-When an ECP is evaluated against a Snapshot, a single result is returned according to the highest violation. If,
-for example, all Components pass the policy requirements, the contract evaluation will be true. If a single
-Component in a Snapshot fails the policy, however, the result will be a failure even if all of the rest have
-clean passes. This behavior can present issues when running the default enterprise contract ITS when an Application
-contains multiple Components.
+When {ProductName} evaluates an ECP against a Snapshot, it returns a single result based on the most severe violation. If all Components in the Snapshot pass, the evaluation succeeds. However, if even one Component fails the policy, the entire Snapshot evaluation fails. This behavior requires careful consideration when using the default ITS for Applications with multiple components.
 
-NOTE: It is possible to enable Single Component mode when the ECP is being evaluated. See
-xref:patterns:testing-releasing-single-component.adoc[Testing and Release a Single Component]
+NOTE: You can configure ECP evaluation to run in Single Component mode. See xref:patterns:testing-releasing-single-component.adoc[Testing and Releasing a Single Component].
 
 === ReleasePlan
-You need to create a ReleasePlan (RP) CR mapping an Application you want to release with a desired release action.
-It defines the process to release future Snapshots of your Application in the managed namespace. It also defines
-whether or not you have automatic releases enabled, as well as additional data that should be supplied to each release
-pipeline that runs in the future.
+Create a ReleasePlan (RP) CR in the tenant namespace to define how an Application should be released. The RP links the source Application to a target managed namespace and release pipeline. It specifies release automation settings (automatic or manual) and provides static data required by the release pipeline.
 
 === ReleasePlanAdmission
-You also need to create a ReleasePlanAdmission (RPA) CR in the managed namespace. It defines the specific pipeline to
-run and a given ECP which needs to pass for any Snapshot before that pipeline can proceed. It also defines important
-details about the delivery of your content that we want to exercise some control over. For example, if your release pipeline uses an
-link:https://github.com/konflux-ci/release-service-catalog/blob/production/tasks/managed/apply-mapping/apply-mapping.yaml[apply-mapping]
-task, the `.spec.data.mapping.components` section of this resource will define which destination repositories your
-content should be pushed to (i.e. `registry.redhat.io/foo/bar` if you are on the `foo` team releasing the `bar` image).
+Create a ReleasePlanAdmission (RPA) CR in the *managed* namespace corresponding to a ReleasePlan. The RPA specifies the exact release pipeline to execute and the ECP that Snapshots must pass before the pipeline runs. It also defines critical release details, such as target repositories. For example, if the release pipeline uses the link:https://github.com/konflux-ci/release-service-catalog/blob/production/tasks/managed/apply-mapping/apply-mapping.yaml[apply-mapping] task, the RPA's `.spec.data.mapping.components` section specifies the destination repositories (e.g., `registry.redhat.io/foo/bar`).
 
 === Release
-Every time you want to release newly built artifacts, you will create a Release CR in *your* namespace. The Release
-CR represents your intent to release some content to customers. It is an active resource that, when present, will
-initiate the push of content.
+Create a Release CR in your *tenant* namespace to initiate the release of a specific Snapshot according to a specific ReleasePlan. The Release CR represents the active intent to release content; its presence triggers the release process defined in the referenced ReleasePlan and ReleasePlanAdmission.
 
-A Release CR references a specific Snapshot and ReleasePlan. It indicates the users' intention to ship the content
-in the Snapshot by way of the referenced ReleasePlan.
+NOTE: You can configure a ReleasePlan for xref:releasing:create-release-plan.adoc[automatic releases]. When enabled, {ProductName} automatically creates Release CRs for Snapshots that pass all required IntegrationTestScenarios. link:https://issues.redhat.com/browse/KONFLUX-1364[Future enhancements] aim to allow dynamic metadata collection for these auto-generated Releases.
 
-NOTE: It is possible to configure your ReleasePlan with xref:releasing:create-release-plan.adoc[auto-release].
-When enabled, the {ProductName} system will generate your Releases for you whenever your Snapshots pass all of their
-IntegrationTestScenarios. https://issues.redhat.com/browse/KONFLUX-1364[Future functionality], will allow you to
-automatically collect dynamic metadata for inclusion in the auto-generated Release CRs.
+== Working within {ProductName}
 
-== Working within Konflux
+Perform all work in {ProductName} within a namespace (your own, shared team, or managed). Use Tekton PipelineRuns to execute actions within namespaces. As you onboard Components, customize the PipelineDefinitions in your Git repositories to define how {ProductName} builds and tests your artifacts.
 
-All work will be performed in {ProductName} within a namespace. These can be "your" namespaces, team shared
-namespaces, or managed namespaces. If an action needs to be performed in a namespace, the work should generally
-be done with a Tekton PipelineRun. As you onboard Components to Konflux, you will be able to customize and define
-the PipelineDefinitions in order to build and test artifacts.
+=== Namespace, Application, Component, and Project/Product relationships
+{ProductName} users operate within namespaces. A namespace typically scopes to a single project or product team, although a project might utilize multiple namespaces if needed. A namespace contains Applications, and Applications contain Components. Avoid sharing a single namespace across multiple distinct projects or products.
 
-=== Namespace vs Application vs Component vs Project/Product
-{ProductName} users operate in namespaces (with sole or shared ownership) which are scoped to individual projects
-(or project depending on the organization). One project can use multiple namespaces if desired, each with many
-applications with components. Namespaces should NOT be shared by many projects.
+=== Common actions in tenant namespaces
+Within your tenant namespaces, you typically perform these actions:
+* Create and manage Components and Applications.
+* Trigger and monitor PipelineRuns defined in your Git repositories.
+* View and iterate on IntegrationTestScenario results.
+* Create Release CRs to initiate Snapshot releases.
 
-=== What will I do in "my" namespaces
-
-You will create Components and Applications, run the PipelineRuns that are defined in your git repositories, view
-and iterate on the results of the IntegrationTestScenarios, and create Releases for specific Snapshots.
-
-=== What do I do with artifacts built from my namespaces
-
-Artifacts build in your namespace (from git pull/merge request or push events) will be pushed to an OCI registry
-along with their supporting metadata (including xref:metadata:index.adoc[SLSA provenance attestations and SBOMs]).
-Once the artifacts are pushed to the registry, they can be used for any common intended activity including development,
-testing, deployments, and releasing (i.e. pushing the images elsewhere either with credentials that you own or that
-someone else owns). The model of building artifacts in {ProductName} is to create them once and release them to as many
-places as needed/desired where each release action have a unique ECP gating the actions.
+=== Artifact usage and release model
+{ProductName} pushes artifacts built in your tenant namespace (triggered by Git events) to an OCI registry, along with associated metadata like xref:metadata:index.adoc[SLSA provenance attestations and SBOMs]. Use these artifacts from the registry for development, testing, deployment, or further releases. {ProductName} supports releasing the same artifact multiple times to different destinations, potentially gated by unique ECPs for each release action.
 
 include::partial${context}-additional-getting-started.adoc[]
-
-== Getting started with the CLI
 
 include::partial${context}-getting-started-with-the-cli.adoc[]
